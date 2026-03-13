@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
     - name: Checkout repository
       uses: actions/checkout@v4
 
@@ -22,12 +21,51 @@ jobs:
 
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
+      with:
+        api-level: 33
+        build-tools: 33.0.1
+        ndk: 25.2.9519653
+        cmake: 3.22.1
+        target: android-33
+        accept-licenses: true
 
     - name: Make gradlew executable
       run: chmod +x ./gradlew
 
+    - name: Cache Gradle
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          gradle-${{ runner.os }}-
+
+    - name: Cache build outputs
+      uses: actions/cache@v3
+      with:
+        path: |
+          app/build
+        key: build-${{ runner.os }}-${{ github.sha }}
+        restore-keys: |
+          build-${{ runner.os }}-
+
+    - name: Determine if clean is needed
+      id: check_clean
+      run: |
+        # If critical Gradle files changed, mark clean=true
+        git diff --name-only HEAD~1 HEAD | grep -E 'build.gradle|settings.gradle|gradle-wrapper.properties' && echo "clean=true" >> $GITHUB_OUTPUT || echo "clean=false" >> $GITHUB_OUTPUT
+
     - name: Build Debug APK
-      run: ./gradlew assembleDebug
+      run: |
+        if [ "${{ steps.check_clean.outputs.clean }}" = "true" ]; then
+          echo "Critical Gradle files changed, performing full clean build"
+          ./gradlew clean assembleDebug --stacktrace
+        else
+          echo "No critical Gradle changes, doing incremental build"
+          ./gradlew assembleDebug --stacktrace
+        fi
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
