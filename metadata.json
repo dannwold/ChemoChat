@@ -1,0 +1,9 @@
+{
+  "name": "ChemoChat",
+  "description": "Secure peer-to-peer chat over Bluetooth Classic with AES encryption, supporting text, emojis, images, and voice clips.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
