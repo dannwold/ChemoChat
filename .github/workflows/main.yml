@@ -10,65 +10,56 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      # Step 1: Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Setup Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: temurin
-        java-version: 17
+      # Step 2: Setup Java
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-      with:
-        api-level: 33
-        build-tools: 33.0.1
-        ndk: 25.2.9519653
-        cmake: 3.22.1
-        target: android-33
-        accept-licenses: true
+      # Step 3: Setup Android SDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: "11.0.1"
+          accept-android-sdk-licenses: true
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.1
 
-    - name: Make gradlew executable
-      run: chmod +x ./gradlew
+      # Step 4: Cache Gradle dependencies
+      - name: Cache Gradle
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/build.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
 
-    - name: Cache Gradle
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-        key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-        restore-keys: |
-          gradle-${{ runner.os }}-
+      # Step 5: Cache Android SDK (optional, speeds up setup)
+      - name: Cache Android SDK
+        uses: actions/cache@v3
+        with:
+          path: ~/.android
+          key: android-sdk-${{ runner.os }}-34
 
-    - name: Cache build outputs
-      uses: actions/cache@v3
-      with:
-        path: |
-          app/build
-        key: build-${{ runner.os }}-${{ github.sha }}
-        restore-keys: |
-          build-${{ runner.os }}-
+      # Step 6: Make gradlew executable
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
 
-    - name: Determine if clean is needed
-      id: check_clean
-      run: |
-        # If critical Gradle files changed, mark clean=true
-        git diff --name-only HEAD~1 HEAD | grep -E 'build.gradle|settings.gradle|gradle-wrapper.properties' && echo "clean=true" >> $GITHUB_OUTPUT || echo "clean=false" >> $GITHUB_OUTPUT
+      # Step 7: Build debug APK
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
 
-    - name: Build Debug APK
-      run: |
-        if [ "${{ steps.check_clean.outputs.clean }}" = "true" ]; then
-          echo "Critical Gradle files changed, performing full clean build"
-          ./gradlew clean assembleDebug --stacktrace
-        else
-          echo "No critical Gradle changes, doing incremental build"
-          ./gradlew assembleDebug --stacktrace
-        fi
-
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: ChemoChat-debug-apk
-        path: app/build/outputs/apk/debug/app-debug.apk
+      # Step 8: Upload APK artifact
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChemoChat-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
