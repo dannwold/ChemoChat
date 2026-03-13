@@ -1,4 +1,4 @@
-name: Build ChemoChat APK
+name: Build ChemoChat Debug APK
 
 on:
   push:
@@ -11,26 +11,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v3
+      # Step 1: Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Set up JDK
-      uses: actions/setup-java@v3
-      with:
-        distribution: temurin
-        java-version: 17
+      # Step 2: Set up Java 17
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: temurin
+          java-version: 17
 
-    - name: Set up Android SDK
-      uses: android-actions/setup-android@v2
-      with:
-        api-level: 34
-        build-tools: 34.0.0
+      # Step 3: Install dependencies
+      - name: Install required packages
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y unzip wget gradle
 
-    - name: Build Debug APK
-      run: ./gradlew assembleDebug
+      # Step 4: Set up Android SDK
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v2
+        with:
+          api-level: 34
+          build-tools: 34.0.0
 
-    - name: Upload Debug APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: ChemoChat-debug-apk
-        path: app/build/outputs/apk/debug/app-debug.apk
+      # Step 5: Build debug APK
+      - name: Build Debug APK
+        run: gradle assembleDebug
+
+      # Step 6: Upload APK as artifact
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChemoChat-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
