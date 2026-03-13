@@ -9,49 +9,28 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # future-proof Node.js 24
-
     steps:
-      # 1. Checkout repository
-      - name: Checkout repo
-        uses: actions/checkout@v3
 
-      # 2. Set up Java 17
-      - name: Set up JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: temurin
-          java-version: 17
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      # 3. Install dependencies
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y unzip wget curl
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 17
 
-      # 4. Download and setup Gradle snapshot (9.4.1)
-      - name: Download and setup Gradle snapshot
-        run: |
-          wget "https://services.gradle.org/distributions-snapshots/gradle-9.4.1-20260313014244+0000-bin.zip" -O gradle-snapshot.zip
-          unzip gradle-snapshot.zip
-          export PATH=$PWD/gradle-9.4.1-20260313014244+0000/bin:$PATH
-          gradle --version
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
 
-      # 5. Setup Android SDK
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v2
-        with:
-          api-level: 34
-          build-tools: 34.0.0
+    - name: Make gradlew executable
+      run: chmod +x ./gradlew
 
-      # 6. Build debug APK
-      - name: Build Debug APK
-        run: gradle assembleDebug
+    - name: Build Debug APK
+      run: ./gradlew assembleDebug
 
-      # 7. Upload APK artifact
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: ChemoChat-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: ChemoChat-debug-apk
+        path: app/build/outputs/apk/debug/app-debug.apk
