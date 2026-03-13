@@ -1,5 +1,7 @@
 name: Build ChemoChat Debug APK
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 on:
   push:
     branches: [ main ]
@@ -22,9 +24,12 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 34
-          build-tools: 34.0.0
-          ndk: false
+          cmdline-tools-version: 12.0
+          accept-android-sdk-licenses: true
+          packages: |
+            platform-tools
+            build-tools;34.0.0
+            platforms;android-34
 
       - name: Cache Gradle packages
         uses: actions/cache@v4
