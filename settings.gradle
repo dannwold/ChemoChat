@@ -1,2 +1,3 @@
+// settings.gradle
 rootProject.name = "ChemoChat"
-include ":app"
+include(":app")
