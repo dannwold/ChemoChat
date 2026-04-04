@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+.gradle/
+captures/
+.externalNativeBuild
+.cxx
+local.properties
