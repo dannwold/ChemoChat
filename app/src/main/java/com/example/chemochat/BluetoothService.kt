@@ -6,6 +6,8 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import android.util.Log
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -46,7 +48,7 @@ class BluetoothService(
     }
 
     fun write(data: String) {
-        connectedThread?.write(data.toByteArray())
+        connectedThread?.write(data.toByteArray(Charsets.UTF_8))
     }
 
     fun stop() {
@@ -126,16 +128,19 @@ class BluetoothService(
     }
 
     private inner class ConnectedThread(private val mmSocket: BluetoothSocket) : Thread() {
-        private val mmInStream: InputStream = mmSocket.inputStream
-        private val mmOutStream: OutputStream = mmSocket.outputStream
-        private val mmBuffer: ByteArray = ByteArray(1024 * 1024) // 1MB buffer
+        private val mmInStream = DataInputStream(mmSocket.inputStream)
+        private val mmOutStream = DataOutputStream(mmSocket.outputStream)
 
         override fun run() {
             while (true) {
                 try {
-                    val bytes = mmInStream.read(mmBuffer)
-                    val incomingMessage = String(mmBuffer, 0, bytes)
-                    onMessageReceived(incomingMessage)
+                    val length = mmInStream.readInt()
+                    if (length > 0) {
+                        val buffer = ByteArray(length)
+                        mmInStream.readFully(buffer)
+                        val incomingMessage = String(buffer, Charsets.UTF_8)
+                        onMessageReceived(incomingMessage)
+                    }
                 } catch (e: IOException) {
                     Log.d(TAG, "Input stream was disconnected", e)
                     onConnectionStatusChanged(Status.DISCONNECTED)
@@ -146,7 +151,9 @@ class BluetoothService(
 
         fun write(bytes: ByteArray) {
             try {
+                mmOutStream.writeInt(bytes.size)
                 mmOutStream.write(bytes)
+                mmOutStream.flush()
             } catch (e: IOException) {
                 Log.e(TAG, "Error occurred when sending data", e)
             }
