@@ -45,6 +45,9 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import java.io.File
+import android.net.Uri
+import androidx.compose.material.icons.filled.Stop
 import java.util.*
 
 class MainActivity : ComponentActivity() {
@@ -108,11 +111,20 @@ class MainActivity : ComponentActivity() {
             bluetoothService = BluetoothService(
                 adapter = adapter,
                 onConnectionStatusChanged = { status -> connectionStatus = status },
-                onMessageReceived = { encryptedMsg ->
+                onMessageReceived = { encryptedWithPrefix ->
                     try {
-                        // Use the updated state reference
-                        val decrypted = EncryptionUtils.decryptText(encryptedMsg, currentPassword.value)
-                        messages.add(Message(sender = "Other", content = encryptedMsg, decryptedContent = decrypted, isFromMe = false))
+                        val typeStr = encryptedWithPrefix.take(2)
+                        val encrypted = encryptedWithPrefix.drop(2)
+                        val decrypted = EncryptionUtils.decrypt(encrypted, currentPassword.value)
+
+                        if (typeStr == "T:") {
+                            val text = String(decrypted, Charsets.UTF_8)
+                            messages.add(Message(sender = "Other", content = encrypted, type = MessageType.TEXT, decryptedContent = text, isFromMe = false))
+                        } else if (typeStr == "A:") {
+                            val audioFile = File(context.cacheDir, "received_audio_${System.currentTimeMillis()}.aac")
+                            audioFile.writeBytes(decrypted)
+                            messages.add(Message(sender = "Other", content = encrypted, type = MessageType.AUDIO, localUri = Uri.fromFile(audioFile), isFromMe = false))
+                        }
                     } catch (e: Exception) {
                         messages.add(Message(sender = "System", content = "Error decrypting message", isFromMe = false))
                     }
@@ -219,8 +231,13 @@ class MainActivity : ComponentActivity() {
                         password = password,
                         onSend = { text ->
                             val encrypted = EncryptionUtils.encryptText(text, password)
-                            bluetoothService?.write(encrypted)
-                            messages.add(Message(sender = "You", content = encrypted, decryptedContent = text, isFromMe = true))
+                            bluetoothService?.write("T:$encrypted")
+                            messages.add(Message(sender = "You", content = encrypted, type = MessageType.TEXT, decryptedContent = text, isFromMe = true))
+                        },
+                        onSendAudio = { audioFile ->
+                            val encrypted = EncryptionUtils.encrypt(audioFile.readBytes(), password)
+                            bluetoothService?.write("A:$encrypted")
+                            messages.add(Message(sender = "You", content = encrypted, type = MessageType.AUDIO, localUri = Uri.fromFile(audioFile), isFromMe = true))
                         },
                         onBack = { 
                             bluetoothService?.stop()
@@ -413,9 +430,13 @@ class MainActivity : ComponentActivity() {
         connectionStatus: BluetoothService.Status,
         password: String,
         onSend: (String) -> Unit,
+        onSendAudio: (File) -> Unit,
         onBack: () -> Unit
     ) {
         var inputText by remember { mutableStateOf("") }
+        val context = LocalContext.current
+        var isRecording by remember { mutableStateOf(false) }
+        var recordingFile by remember { mutableStateOf<File?>(null) }
 
         Column(modifier = Modifier.fillMaxSize()) {
             // Header
@@ -431,7 +452,24 @@ class MainActivity : ComponentActivity() {
                 },
                 actions = {
                     IconButton(onClick = { /* Attach Image */ }) { Icon(Icons.Default.Image, contentDescription = null) }
-                    IconButton(onClick = { /* Record Audio */ }) { Icon(Icons.Default.Mic, contentDescription = null) }
+                    IconButton(onClick = {
+                        if (isRecording) {
+                            AudioHandler.stopRecording()
+                            isRecording = false
+                            recordingFile?.let { onSendAudio(it) }
+                        } else {
+                            val file = File(context.cacheDir, "sent_audio_${System.currentTimeMillis()}.aac")
+                            recordingFile = file
+                            AudioHandler.startRecording(context, file)
+                            isRecording = true
+                        }
+                    }) {
+                        Icon(
+                            if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                            contentDescription = if (isRecording) "Stop Recording" else "Record Audio",
+                            tint = if (isRecording) Color.Red else LocalContentColor.current
+                        )
+                    }
                 }
             )
 
@@ -482,7 +520,6 @@ class MainActivity : ComponentActivity() {
     fun ChatBubble(message: Message) {
         val alignment = if (message.isFromMe) Alignment.End else Alignment.Start
         val bgColor = if (message.isFromMe) MaterialTheme.colorScheme.primary else Color(0xFF333333)
-        val textColor = if (message.isFromMe) Color.White else Color.White
 
         Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = alignment) {
             Surface(
@@ -494,11 +531,15 @@ class MainActivity : ComponentActivity() {
                     bottomEnd = if (message.isFromMe) 4.dp else 16.dp
                 )
             ) {
-                Text(
-                    text = message.decryptedContent ?: "Encrypted Message",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    color = textColor
-                )
+                if (message.type == MessageType.AUDIO) {
+                    AudioPlayerBubble(message.localUri)
+                } else {
+                    Text(
+                        text = message.decryptedContent ?: "Encrypted Message",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        color = Color.White
+                    )
+                }
             }
             Text(
                 text = message.sender,
@@ -506,6 +547,37 @@ class MainActivity : ComponentActivity() {
                 color = Color.Gray,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
             )
+        }
+    }
+
+    @Composable
+    fun AudioPlayerBubble(uri: Uri?) {
+        var isPlaying by remember { mutableStateOf(false) }
+
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = {
+                if (isPlaying) {
+                    AudioHandler.stopPlayback()
+                    isPlaying = false
+                } else {
+                    uri?.path?.let { path ->
+                        AudioHandler.startPlayback(File(path)) {
+                            isPlaying = false
+                        }
+                        isPlaying = true
+                    }
+                }
+            }) {
+                Icon(
+                    if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = Color.White
+                )
+            }
+            Text("Voice Message", color = Color.White, fontSize = 14.sp)
         }
     }
 
