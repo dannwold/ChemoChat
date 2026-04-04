@@ -4,20 +4,21 @@ import android.util.Base64
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Utility class for AES-256 encryption and decryption.
+ * Utility class for AES-256-GCM authenticated encryption and decryption.
  * Uses PBKDF2 for key derivation from a password.
  */
 object EncryptionUtils {
-    private const val ALGORITHM = "AES/CBC/PKCS5Padding"
+    private const val ALGORITHM = "AES/GCM/NoPadding"
     private const val KEY_LENGTH = 256
     private const val ITERATIONS = 10000
     private const val SALT_SIZE = 16
-    private const val IV_SIZE = 16
+    private const val IV_SIZE = 12
+    private const val TAG_LENGTH = 128
 
     /**
      * Derives a SecretKey from a password and salt.
@@ -39,7 +40,7 @@ object EncryptionUtils {
         val key = deriveKey(password, salt)
 
         val cipher = Cipher.getInstance(ALGORITHM)
-        cipher.init(Cipher.ENCRYPT_MODE, key, IvParameterSpec(iv))
+        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_LENGTH, iv))
         val encrypted = cipher.doFinal(data)
 
         val combined = salt + iv + encrypted
@@ -47,7 +48,7 @@ object EncryptionUtils {
     }
 
     /**
-     * Decrypts a Base64 encoded string using AES-256.
+     * Decrypts a Base64 encoded string using AES-256-GCM.
      */
     fun decrypt(encryptedBase64: String, password: String): ByteArray {
         val combined = Base64.decode(encryptedBase64, Base64.DEFAULT)
@@ -58,7 +59,7 @@ object EncryptionUtils {
 
         val key = deriveKey(password, salt)
         val cipher = Cipher.getInstance(ALGORITHM)
-        cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_LENGTH, iv))
         
         return cipher.doFinal(encrypted)
     }
