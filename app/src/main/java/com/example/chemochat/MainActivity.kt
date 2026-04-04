@@ -95,6 +95,7 @@ class MainActivity : ComponentActivity() {
         var displayName by remember { mutableStateOf(sharedPrefs.getString("displayName", "User") ?: "User") }
         var chatColor by remember { mutableStateOf(sharedPrefs.getInt("chatColor", AndroidColor.parseColor("#10b981"))) }
         var password by remember { mutableStateOf(sharedPrefs.getString("password", "") ?: "") }
+        var isVerbose by remember { mutableStateOf(sharedPrefs.getBoolean("isVerbose", false)) }
         
         var connectionStatus by remember { mutableStateOf(BluetoothService.Status.DISCONNECTED) }
         val messages = remember { mutableStateListOf<Message>() }
@@ -102,6 +103,11 @@ class MainActivity : ComponentActivity() {
 
         // Current password reference to be used in callback
         val currentPassword = rememberUpdatedState(password)
+
+        // Initialize LogUtils
+        LaunchedEffect(isVerbose) {
+            LogUtils.isVerbose = isVerbose
+        }
 
         // Initialize Bluetooth Service
         LaunchedEffect(Unit) {
@@ -118,25 +124,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             )
-        }
-
-        // QR Scanner Launcher
-        val barcodeLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
-            if (result.contents != null) {
-                val parts = result.contents.split("|")
-                if (parts.size == 2) {
-                    val mac = parts[0]
-                    val pass = parts[1]
-                    password = pass
-                    sharedPrefs.edit().putString("password", pass).apply()
-                    
-                    val device = adapter?.getRemoteDevice(mac)
-                    if (device != null) {
-                        bluetoothService?.connectToDevice(device)
-                        currentScreen = "chat"
-                    }
-                }
-            }
         }
 
         // Permission Launcher
@@ -173,8 +160,51 @@ class MainActivity : ComponentActivity() {
             return true
         }
 
+        // QR Scanner Launcher
+        val barcodeLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+            if (result.contents != null) {
+                val parts = result.contents.split("|")
+                if (parts.size >= 2) {
+                    val mac = parts[0]
+                    val pass = parts[1]
+                    val hostName = if (parts.size > 2) parts[2] else null
+
+                    password = pass
+                    sharedPrefs.edit().putString("password", pass).apply()
+
+                    if (BluetoothAdapter.checkBluetoothAddress(mac) && mac != "02:00:00:00:00:00") {
+                        val device = adapter?.getRemoteDevice(mac)
+                        if (device != null) {
+                            bluetoothService?.connectToDevice(device)
+                            currentScreen = "chat"
+                        }
+                    } else if (hostName != null) {
+                        // MAC is masked, try to find device by name
+                        Toast.makeText(context, "MAC masked, searching for host: $hostName", Toast.LENGTH_LONG).show()
+                        if (checkPermissions()) {
+                            discoveredDevices.clear()
+                            adapter?.startDiscovery()
+                            // Switching to join screen to show discovered devices.
+                            currentScreen = "join"
+                        }
+                    } else {
+                        Toast.makeText(context, "Invalid QR code: No MAC and no Host Name", Toast.LENGTH_LONG).show()
+                    }
+                } else {
+                    Toast.makeText(context, "Invalid QR code format", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
         LaunchedEffect(Unit) {
             checkPermissions()
+        }
+
+        // Transition to chat screen when connected
+        LaunchedEffect(connectionStatus) {
+            if (connectionStatus == BluetoothService.Status.CONNECTED) {
+                currentScreen = "chat"
+            }
         }
 
         MaterialTheme(
@@ -192,6 +222,7 @@ class MainActivity : ComponentActivity() {
                         onSettings = { currentScreen = "settings" }
                     )
                     "host" -> HostScreen(
+                        displayName = displayName,
                         adapter = adapter,
                         password = password,
                         checkPermissions = { checkPermissions() },
@@ -231,14 +262,18 @@ class MainActivity : ComponentActivity() {
                         initialName = displayName,
                         initialColor = chatColor,
                         initialPassword = password,
-                        onSave = { name, color, pass ->
+                        initialVerbose = isVerbose,
+                        onExportLogs = { LogUtils.exportLogs(context) },
+                        onSave = { name, color, pass, verbose ->
                             displayName = name
                             chatColor = color
                             password = pass
+                            isVerbose = verbose
                             sharedPrefs.edit().apply {
                                 putString("displayName", name)
                                 putInt("chatColor", color)
                                 putString("password", pass)
+                                putBoolean("isVerbose", verbose)
                                 apply()
                             }
                             currentScreen = "start"
@@ -280,6 +315,7 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("MissingPermission")
     @Composable
     fun HostScreen(
+        displayName: String,
         adapter: BluetoothAdapter?,
         password: String,
         checkPermissions: () -> Boolean,
@@ -287,8 +323,19 @@ class MainActivity : ComponentActivity() {
         onConnected: () -> Unit
     ) {
         val context = LocalContext.current
-        val macAddress = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) adapter?.address ?: "Unknown" else "Scan QR Code"
-        val qrContent = "$macAddress|$password"
+
+        // Automatically start hosting and make discoverable
+        LaunchedEffect(Unit) {
+            if (checkPermissions()) {
+                bluetoothService?.startHost()
+                val discoverableIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
+                    putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
+                }
+                context.startActivity(discoverableIntent)
+            }
+        }
+        val macAddress = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) adapter?.address ?: "02:00:00:00:00:00" else "02:00:00:00:00:00"
+        val qrContent = "$macAddress|$password|$displayName"
         val qrBitmap = remember { generateQRCode(qrContent) }
 
         Column(
@@ -315,22 +362,7 @@ class MainActivity : ComponentActivity() {
             Text("Waiting for connection...", fontWeight = FontWeight.Light)
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 16.dp))
             
-            Row {
-                Button(onClick = {
-                    if (checkPermissions()) {
-                        val discoverableIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
-                            putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
-                        }
-                        context.startActivity(discoverableIntent)
-                    }
-                }) {
-                    Text("Make Discoverable")
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(onClick = { bluetoothService?.startHost() }) {
-                    Text("Start Listening")
-                }
-            }
+            Text("Your device is now discoverable and listening for connections.", fontSize = 12.sp, color = Color.Gray, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
     }
 
@@ -362,7 +394,7 @@ class MainActivity : ComponentActivity() {
                 placeholder = { Text("Encryption Passphrase") },
                 label = { Text("Passphrase") }
             )
-            
+
             Spacer(modifier = Modifier.height(16.dp))
 
             Button(onClick = onScanQR, modifier = Modifier.fillMaxWidth()) {
@@ -510,9 +542,18 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun SettingsScreen(initialName: String, initialColor: Int, initialPassword: String, onSave: (String, Int, String) -> Unit, onBack: () -> Unit) {
+    fun SettingsScreen(
+        initialName: String,
+        initialColor: Int,
+        initialPassword: String,
+        initialVerbose: Boolean,
+        onExportLogs: () -> Unit,
+        onSave: (String, Int, String, Boolean) -> Unit,
+        onBack: () -> Unit
+    ) {
         var name by remember { mutableStateOf(initialName) }
         var pass by remember { mutableStateOf(initialPassword) }
+        var verbose by remember { mutableStateOf(initialVerbose) }
         
         Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
             Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.Bold)
@@ -526,9 +567,22 @@ class MainActivity : ComponentActivity() {
             Text("Encryption Password", fontSize = 14.sp, color = Color.Gray)
             TextField(value = pass, onValueChange = { pass = it }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("Shared secret") })
             
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Verbose Logging", modifier = Modifier.weight(1f))
+                Switch(checked = verbose, onCheckedChange = { verbose = it })
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(onClick = onExportLogs, modifier = Modifier.fillMaxWidth()) {
+                Text("Export Logs")
+            }
+
             Spacer(modifier = Modifier.weight(1f))
             
-            Button(onClick = { onSave(name, initialColor, pass) }, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = { onSave(name, initialColor, pass, verbose) }, modifier = Modifier.fillMaxWidth()) {
                 Text("Save Settings")
             }
             TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
