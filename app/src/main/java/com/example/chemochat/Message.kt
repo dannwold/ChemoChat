@@ -1,6 +1,5 @@
 package com.example.chemochat
 
-import android.graphics.Bitmap
 import android.net.Uri
 
 /**
