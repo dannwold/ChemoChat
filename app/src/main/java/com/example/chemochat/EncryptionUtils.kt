@@ -7,6 +7,8 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
+import java.util.Collections
+import java.util.LinkedHashMap
 
 /**
  * Utility class for AES-256 encryption and decryption.
@@ -18,15 +20,53 @@ object EncryptionUtils {
     private const val ITERATIONS = 10000
     private const val SALT_SIZE = 16
     private const val IV_SIZE = 16
+    private const val MAX_CACHE_SIZE = 10
+
+    private val secureRandom: SecureRandom by lazy { SecureRandom() }
+    private val keyFactory: SecretKeyFactory by lazy {
+        SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+    }
+
+    private data class KeyCacheKey(val password: String, val salt: ByteArray) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is KeyCacheKey) return false
+            if (password != other.password) return false
+            if (!salt.contentEquals(other.salt)) return false
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = password.hashCode()
+            result = 31 * result + salt.contentHashCode()
+            return result
+        }
+    }
+
+    private val keyCache: MutableMap<KeyCacheKey, SecretKeySpec> = Collections.synchronizedMap(
+        object : LinkedHashMap<KeyCacheKey, SecretKeySpec>(MAX_CACHE_SIZE, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<KeyCacheKey, SecretKeySpec>?): Boolean {
+                return size > MAX_CACHE_SIZE
+            }
+        }
+    )
 
     /**
      * Derives a SecretKey from a password and salt.
      */
     private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        val cacheKey = KeyCacheKey(password, salt)
+        keyCache[cacheKey]?.let { return it }
+
         val spec = PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_LENGTH)
-        val keyBytes = factory.generateSecret(spec).encoded
-        return SecretKeySpec(keyBytes, "AES")
+        try {
+            val keyBytes = keyFactory.generateSecret(spec).encoded
+            val keySpec = SecretKeySpec(keyBytes, "AES")
+            keyCache[cacheKey] = keySpec
+            return keySpec
+        } finally {
+            spec.clearPassword()
+        }
     }
 
     /**
@@ -34,8 +74,8 @@ object EncryptionUtils {
      * Returns a Base64 encoded string containing [salt + iv + encryptedData].
      */
     fun encrypt(data: ByteArray, password: String): String {
-        val salt = ByteArray(SALT_SIZE).apply { SecureRandom().nextBytes(this) }
-        val iv = ByteArray(IV_SIZE).apply { SecureRandom().nextBytes(this) }
+        val salt = ByteArray(SALT_SIZE).apply { secureRandom.nextBytes(this) }
+        val iv = ByteArray(IV_SIZE).apply { secureRandom.nextBytes(this) }
         val key = deriveKey(password, salt)
 
         val cipher = Cipher.getInstance(ALGORITHM)
