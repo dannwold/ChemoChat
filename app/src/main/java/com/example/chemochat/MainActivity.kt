@@ -3,9 +3,12 @@ package com.example.chemochat
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
@@ -23,6 +26,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -42,6 +49,24 @@ import java.util.*
 
 class MainActivity : ComponentActivity() {
 
+    private val discoveredDevices = mutableStateListOf<BluetoothDevice>()
+
+    private val receiver = object : BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
+        override fun onReceive(context: Context, intent: Intent) {
+            when(intent.action) {
+                BluetoothDevice.ACTION_FOUND -> {
+                    val device: BluetoothDevice? = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    device?.let {
+                        if (!discoveredDevices.contains(it)) {
+                            discoveredDevices.add(it)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var bluetoothService: BluetoothService? = null
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -50,9 +75,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
+        registerReceiver(receiver, filter)
         setContent {
             ChemoChatApp(bluetoothAdapter)
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        unregisterReceiver(receiver)
     }
 
     @Composable
@@ -68,6 +100,9 @@ class MainActivity : ComponentActivity() {
         val messages = remember { mutableStateListOf<Message>() }
         var currentScreen by remember { mutableStateOf("start") } // start, host, join, chat, settings
 
+        // Current password reference to be used in callback
+        val currentPassword = rememberUpdatedState(password)
+
         // Initialize Bluetooth Service
         LaunchedEffect(Unit) {
             bluetoothService = BluetoothService(
@@ -75,7 +110,8 @@ class MainActivity : ComponentActivity() {
                 onConnectionStatusChanged = { status -> connectionStatus = status },
                 onMessageReceived = { encryptedMsg ->
                     try {
-                        val decrypted = EncryptionUtils.decryptText(encryptedMsg, password)
+                        // Use the updated state reference
+                        val decrypted = EncryptionUtils.decryptText(encryptedMsg, currentPassword.value)
                         messages.add(Message(sender = "Other", content = encryptedMsg, decryptedContent = decrypted, isFromMe = false))
                     } catch (e: Exception) {
                         messages.add(Message(sender = "System", content = "Error decrypting message", isFromMe = false))
@@ -113,9 +149,10 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        LaunchedEffect(Unit) {
+        fun checkPermissions(): Boolean {
             val requiredPermissions = mutableListOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
                 Manifest.permission.CAMERA,
                 Manifest.permission.RECORD_AUDIO
             )
@@ -124,7 +161,20 @@ class MainActivity : ComponentActivity() {
                 requiredPermissions.add(Manifest.permission.BLUETOOTH_CONNECT)
                 requiredPermissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
             }
-            permissionLauncher.launch(requiredPermissions.toTypedArray())
+
+            val allGranted = requiredPermissions.all {
+                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+            }
+
+            if (!allGranted) {
+                permissionLauncher.launch(requiredPermissions.toTypedArray())
+                return false
+            }
+            return true
+        }
+
+        LaunchedEffect(Unit) {
+            checkPermissions()
         }
 
         MaterialTheme(
@@ -144,11 +194,23 @@ class MainActivity : ComponentActivity() {
                     "host" -> HostScreen(
                         adapter = adapter,
                         password = password,
+                        checkPermissions = { checkPermissions() },
                         onBack = { currentScreen = "start" },
                         onConnected = { currentScreen = "chat" }
                     )
                     "join" -> JoinScreen(
+                        adapter = adapter,
+                        initialPassword = password,
+                        checkPermissions = { checkPermissions() },
+                        onPasswordChange = {
+                            password = it
+                            sharedPrefs.edit().putString("password", it).apply()
+                        },
                         onScanQR = { barcodeLauncher.launch(ScanOptions()) },
+                        onConnect = { device ->
+                            bluetoothService?.connectToDevice(device)
+                            currentScreen = "chat"
+                        },
                         onBack = { currentScreen = "start" }
                     )
                     "chat" -> ChatScreen(
@@ -195,7 +257,7 @@ class MainActivity : ComponentActivity() {
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(Icons.Default.Message, contentDescription = null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.primary)
+            Icon(Icons.Default.Chat, contentDescription = null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(16.dp))
             Text("ChemoChat", fontSize = 32.sp, fontWeight = FontWeight.Bold)
             Text("Secure P2P Bluetooth Chat", color = Color.Gray)
@@ -217,8 +279,15 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("MissingPermission")
     @Composable
-    fun HostScreen(adapter: BluetoothAdapter?, password: String, onBack: () -> Unit, onConnected: () -> Unit) {
-        val macAddress = adapter?.address ?: "Unknown"
+    fun HostScreen(
+        adapter: BluetoothAdapter?,
+        password: String,
+        checkPermissions: () -> Boolean,
+        onBack: () -> Unit,
+        onConnected: () -> Unit
+    ) {
+        val context = LocalContext.current
+        val macAddress = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) adapter?.address ?: "Unknown" else "Scan QR Code"
         val qrContent = "$macAddress|$password"
         val qrBitmap = remember { generateQRCode(qrContent) }
 
@@ -246,32 +315,98 @@ class MainActivity : ComponentActivity() {
             Text("Waiting for connection...", fontWeight = FontWeight.Light)
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 16.dp))
             
-            Button(onClick = { bluetoothService?.startHost() }) {
-                Text("Start Listening")
+            Row {
+                Button(onClick = {
+                    if (checkPermissions()) {
+                        val discoverableIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
+                            putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
+                        }
+                        context.startActivity(discoverableIntent)
+                    }
+                }) {
+                    Text("Make Discoverable")
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(onClick = { bluetoothService?.startHost() }) {
+                    Text("Start Listening")
+                }
             }
         }
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
+    @SuppressLint("MissingPermission")
     @Composable
-    fun JoinScreen(onScanQR: () -> Unit, onBack: () -> Unit) {
+    fun JoinScreen(
+        adapter: BluetoothAdapter?,
+        initialPassword: String,
+        checkPermissions: () -> Boolean,
+        onPasswordChange: (String) -> Unit,
+        onScanQR: () -> Unit,
+        onConnect: (BluetoothDevice) -> Unit,
+        onBack: () -> Unit
+    ) {
         Column(
             modifier = Modifier.fillMaxSize().padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text("Join a Chat", fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(16.dp))
-            Text("Scan the host's QR code to connect securely.", textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = Color.Gray)
-            Spacer(modifier = Modifier.height(48.dp))
+            Text("Scan host QR or select from discovered devices.", textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = Color.Gray)
+
+            Spacer(modifier = Modifier.height(16.dp))
+            TextField(
+                value = initialPassword,
+                onValueChange = onPasswordChange,
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Encryption Passphrase") },
+                label = { Text("Passphrase") }
+            )
             
-            Button(onClick = onScanQR, modifier = Modifier.size(120.dp), shape = RoundedCornerShape(24.dp)) {
-                Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(48.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(onClick = onScanQR, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.QrCodeScanner, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Scan QR Code")
             }
-            Spacer(modifier = Modifier.height(48.dp))
-            TextButton(onClick = onBack) { Text("Cancel") }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(onClick = {
+                if (checkPermissions()) {
+                    discoveredDevices.clear()
+                    adapter?.startDiscovery()
+                }
+            }, modifier = Modifier.fillMaxWidth()) {
+                Text("Refresh Devices")
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                items(discoveredDevices) { device ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        onClick = { onConnect(device) }
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(device.name ?: "Unknown Device", fontWeight = FontWeight.Bold)
+                            Text(device.address, fontSize = 12.sp, color = Color.Gray)
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            TextButton(onClick = {
+                adapter?.cancelDiscovery()
+                onBack()
+            }) { Text("Cancel") }
         }
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun ChatScreen(
         messages: List<Message>,
