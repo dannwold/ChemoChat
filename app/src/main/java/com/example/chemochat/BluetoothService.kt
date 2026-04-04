@@ -6,6 +6,8 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import android.util.Log
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -17,7 +19,7 @@ import java.util.UUID
 class BluetoothService(
     private val adapter: BluetoothAdapter?,
     private val onConnectionStatusChanged: (Status) -> Unit,
-    private val onMessageReceived: (String) -> Unit
+    private val onMessageReceived: (Int, ByteArray) -> Unit
 ) {
     private var connectThread: ConnectThread? = null
     private var acceptThread: AcceptThread? = null
@@ -45,8 +47,8 @@ class BluetoothService(
         onConnectionStatusChanged(Status.CONNECTING)
     }
 
-    fun write(data: String) {
-        connectedThread?.write(data.toByteArray())
+    fun write(type: Int, data: ByteArray) {
+        connectedThread?.write(type, data)
     }
 
     fun stop() {
@@ -126,16 +128,19 @@ class BluetoothService(
     }
 
     private inner class ConnectedThread(private val mmSocket: BluetoothSocket) : Thread() {
-        private val mmInStream: InputStream = mmSocket.inputStream
-        private val mmOutStream: OutputStream = mmSocket.outputStream
-        private val mmBuffer: ByteArray = ByteArray(1024 * 1024) // 1MB buffer
+        private val mmInStream: DataInputStream = DataInputStream(mmSocket.inputStream)
+        private val mmOutStream: DataOutputStream = DataOutputStream(mmSocket.outputStream)
 
         override fun run() {
             while (true) {
                 try {
-                    val bytes = mmInStream.read(mmBuffer)
-                    val incomingMessage = String(mmBuffer, 0, bytes)
-                    onMessageReceived(incomingMessage)
+                    val type = mmInStream.readInt()
+                    val length = mmInStream.readInt()
+                    if (length > 0 && length < 10 * 1024 * 1024) { // Max 10MB
+                        val payload = ByteArray(length)
+                        mmInStream.readFully(payload)
+                        onMessageReceived(type, payload)
+                    }
                 } catch (e: IOException) {
                     Log.d(TAG, "Input stream was disconnected", e)
                     onConnectionStatusChanged(Status.DISCONNECTED)
@@ -144,9 +149,12 @@ class BluetoothService(
             }
         }
 
-        fun write(bytes: ByteArray) {
+        fun write(type: Int, bytes: ByteArray) {
             try {
+                mmOutStream.writeInt(type)
+                mmOutStream.writeInt(bytes.size)
                 mmOutStream.write(bytes)
+                mmOutStream.flush()
             } catch (e: IOException) {
                 Log.e(TAG, "Error occurred when sending data", e)
             }

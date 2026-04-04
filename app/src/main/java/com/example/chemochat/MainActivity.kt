@@ -32,6 +32,9 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.compose.foundation.Image
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,10 +44,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import java.io.File
+import java.io.FileOutputStream
 import java.util.*
 
 class MainActivity : ComponentActivity() {
@@ -108,16 +114,43 @@ class MainActivity : ComponentActivity() {
             bluetoothService = BluetoothService(
                 adapter = adapter,
                 onConnectionStatusChanged = { status -> connectionStatus = status },
-                onMessageReceived = { encryptedMsg ->
+                onMessageReceived = { type, payload ->
                     try {
-                        // Use the updated state reference
-                        val decrypted = EncryptionUtils.decryptText(encryptedMsg, currentPassword.value)
-                        messages.add(Message(sender = "Other", content = encryptedMsg, decryptedContent = decrypted, isFromMe = false))
+                        when (type) {
+                            MessageType.TEXT.ordinal -> {
+                                val encryptedMsg = String(payload)
+                                val decrypted = EncryptionUtils.decryptText(encryptedMsg, currentPassword.value)
+                                messages.add(Message(sender = "Other", content = encryptedMsg, decryptedContent = decrypted, isFromMe = false))
+                            }
+                            MessageType.IMAGE.ordinal -> {
+                                val decryptedBytes = EncryptionUtils.decryptFromByteArray(payload, currentPassword.value)
+                                val file = File(context.cacheDir, "received_${System.currentTimeMillis()}.jpg")
+                                FileOutputStream(file).use { it.write(decryptedBytes) }
+                                val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+                                messages.add(Message(sender = "Other", content = "[Image]", type = MessageType.IMAGE, localUri = uri, isFromMe = false))
+                            }
+                        }
                     } catch (e: Exception) {
                         messages.add(Message(sender = "System", content = "Error decrypting message", isFromMe = false))
                     }
                 }
             )
+        }
+
+        // Image Picker Launcher
+        val imagePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            uri?.let {
+                try {
+                    val bytes = context.contentResolver.openInputStream(it)?.use { input -> input.readBytes() }
+                    if (bytes != null) {
+                        val encrypted = EncryptionUtils.encryptToByteArray(bytes, password)
+                        bluetoothService?.write(MessageType.IMAGE.ordinal, encrypted)
+                        messages.add(Message(sender = "You", content = "[Image]", type = MessageType.IMAGE, localUri = it, isFromMe = true))
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Error sending image", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
 
         // QR Scanner Launcher
@@ -156,6 +189,11 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.CAMERA,
                 Manifest.permission.RECORD_AUDIO
             )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                requiredPermissions.add(Manifest.permission.READ_MEDIA_IMAGES)
+            } else {
+                requiredPermissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 requiredPermissions.add(Manifest.permission.BLUETOOTH_SCAN)
                 requiredPermissions.add(Manifest.permission.BLUETOOTH_CONNECT)
@@ -219,8 +257,13 @@ class MainActivity : ComponentActivity() {
                         password = password,
                         onSend = { text ->
                             val encrypted = EncryptionUtils.encryptText(text, password)
-                            bluetoothService?.write(encrypted)
+                            bluetoothService?.write(MessageType.TEXT.ordinal, encrypted.toByteArray())
                             messages.add(Message(sender = "You", content = encrypted, decryptedContent = text, isFromMe = true))
+                        },
+                        onAttachImage = {
+                            if (checkPermissions()) {
+                                imagePickerLauncher.launch("image/*")
+                            }
                         },
                         onBack = { 
                             bluetoothService?.stop()
@@ -413,6 +456,7 @@ class MainActivity : ComponentActivity() {
         connectionStatus: BluetoothService.Status,
         password: String,
         onSend: (String) -> Unit,
+        onAttachImage: () -> Unit,
         onBack: () -> Unit
     ) {
         var inputText by remember { mutableStateOf("") }
@@ -430,7 +474,7 @@ class MainActivity : ComponentActivity() {
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null) }
                 },
                 actions = {
-                    IconButton(onClick = { /* Attach Image */ }) { Icon(Icons.Default.Image, contentDescription = null) }
+                    IconButton(onClick = onAttachImage) { Icon(Icons.Default.Image, contentDescription = null) }
                     IconButton(onClick = { /* Record Audio */ }) { Icon(Icons.Default.Mic, contentDescription = null) }
                 }
             )
@@ -482,7 +526,7 @@ class MainActivity : ComponentActivity() {
     fun ChatBubble(message: Message) {
         val alignment = if (message.isFromMe) Alignment.End else Alignment.Start
         val bgColor = if (message.isFromMe) MaterialTheme.colorScheme.primary else Color(0xFF333333)
-        val textColor = if (message.isFromMe) Color.White else Color.White
+        val context = LocalContext.current
 
         Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = alignment) {
             Surface(
@@ -494,11 +538,30 @@ class MainActivity : ComponentActivity() {
                     bottomEnd = if (message.isFromMe) 4.dp else 16.dp
                 )
             ) {
-                Text(
-                    text = message.decryptedContent ?: "Encrypted Message",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    color = textColor
-                )
+                if (message.type == MessageType.IMAGE && message.localUri != null) {
+                    val bitmap = remember(message.localUri) {
+                        try {
+                            context.contentResolver.openInputStream(message.localUri)?.use {
+                                BitmapFactory.decodeStream(it)
+                            }
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                    bitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier.padding(8.dp).sizeIn(maxWidth = 250.dp, maxHeight = 400.dp)
+                        )
+                    } ?: Text("Error loading image", modifier = Modifier.padding(16.dp), color = Color.White)
+                } else {
+                    Text(
+                        text = message.decryptedContent ?: "Encrypted Message",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        color = Color.White
+                    )
+                }
             }
             Text(
                 text = message.sender,

@@ -31,9 +31,9 @@ object EncryptionUtils {
 
     /**
      * Encrypts data using AES-256.
-     * Returns a Base64 encoded string containing [salt + iv + encryptedData].
+     * Returns a ByteArray containing [salt + iv + encryptedData].
      */
-    fun encrypt(data: ByteArray, password: String): String {
+    fun encryptToByteArray(data: ByteArray, password: String): ByteArray {
         val salt = ByteArray(SALT_SIZE).apply { SecureRandom().nextBytes(this) }
         val iv = ByteArray(IV_SIZE).apply { SecureRandom().nextBytes(this) }
         val key = deriveKey(password, salt)
@@ -42,16 +42,13 @@ object EncryptionUtils {
         cipher.init(Cipher.ENCRYPT_MODE, key, IvParameterSpec(iv))
         val encrypted = cipher.doFinal(data)
 
-        val combined = salt + iv + encrypted
-        return Base64.encodeToString(combined, Base64.DEFAULT)
+        return salt + iv + encrypted
     }
 
     /**
-     * Decrypts a Base64 encoded string using AES-256.
+     * Decrypts a ByteArray using AES-256.
      */
-    fun decrypt(encryptedBase64: String, password: String): ByteArray {
-        val combined = Base64.decode(encryptedBase64, Base64.DEFAULT)
-        
+    fun decryptFromByteArray(combined: ByteArray, password: String): ByteArray {
         val salt = combined.sliceArray(0 until SALT_SIZE)
         val iv = combined.sliceArray(SALT_SIZE until SALT_SIZE + IV_SIZE)
         val encrypted = combined.sliceArray(SALT_SIZE + IV_SIZE until combined.size)
@@ -61,6 +58,23 @@ object EncryptionUtils {
         cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
         
         return cipher.doFinal(encrypted)
+    }
+
+    /**
+     * Encrypts data using AES-256.
+     * Returns a Base64 encoded string containing [salt + iv + encryptedData].
+     */
+    fun encrypt(data: ByteArray, password: String): String {
+        val combined = encryptToByteArray(data, password)
+        return Base64.encodeToString(combined, Base64.DEFAULT)
+    }
+
+    /**
+     * Decrypts a Base64 encoded string using AES-256.
+     */
+    fun decrypt(encryptedBase64: String, password: String): ByteArray {
+        val combined = Base64.decode(encryptedBase64, Base64.DEFAULT)
+        return decryptFromByteArray(combined, password)
     }
 
     fun encryptText(text: String, password: String): String {
