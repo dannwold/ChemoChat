@@ -6,8 +6,10 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import android.util.Log
+import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStream
+import java.io.InputStreamReader
 import java.io.OutputStream
 import java.util.UUID
 
@@ -46,7 +48,7 @@ class BluetoothService(
     }
 
     fun write(data: String) {
-        connectedThread?.write(data.toByteArray())
+        connectedThread?.write((data + "\n").toByteArray())
     }
 
     fun stop() {
@@ -128,13 +130,12 @@ class BluetoothService(
     private inner class ConnectedThread(private val mmSocket: BluetoothSocket) : Thread() {
         private val mmInStream: InputStream = mmSocket.inputStream
         private val mmOutStream: OutputStream = mmSocket.outputStream
-        private val mmBuffer: ByteArray = ByteArray(1024 * 1024) // 1MB buffer
 
         override fun run() {
+            val reader = BufferedReader(InputStreamReader(mmInStream))
             while (true) {
                 try {
-                    val bytes = mmInStream.read(mmBuffer)
-                    val incomingMessage = String(mmBuffer, 0, bytes)
+                    val incomingMessage = reader.readLine() ?: break
                     onMessageReceived(incomingMessage)
                 } catch (e: IOException) {
                     Log.d(TAG, "Input stream was disconnected", e)

@@ -12,8 +12,12 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
+import android.media.MediaPlayer
+import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -41,10 +45,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import java.io.File
+import java.io.FileOutputStream
 import java.util.*
 
 class MainActivity : ComponentActivity() {
@@ -108,12 +115,28 @@ class MainActivity : ComponentActivity() {
             bluetoothService = BluetoothService(
                 adapter = adapter,
                 onConnectionStatusChanged = { status -> connectionStatus = status },
-                onMessageReceived = { encryptedMsg ->
+                onMessageReceived = { incoming ->
                     try {
-                        // Use the updated state reference
-                        val decrypted = EncryptionUtils.decryptText(encryptedMsg, currentPassword.value)
-                        messages.add(Message(sender = "Other", content = encryptedMsg, decryptedContent = decrypted, isFromMe = false))
+                        val typeChar = incoming.getOrNull(0)
+                        val data = incoming.substring(2)
+                        val type = when(typeChar) {
+                            'T' -> MessageType.TEXT
+                            'A' -> MessageType.AUDIO
+                            else -> MessageType.TEXT
+                        }
+
+                        if (type == MessageType.AUDIO) {
+                            val audioData = EncryptionUtils.decrypt(data, currentPassword.value)
+                            val file = File(context.cacheDir, "received_audio_${System.currentTimeMillis()}.mp4")
+                            FileOutputStream(file).use { it.write(audioData) }
+                            val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+                            messages.add(Message(sender = "Other", content = data, type = type, localUri = uri, isFromMe = false))
+                        } else {
+                            val decrypted = EncryptionUtils.decryptText(data, currentPassword.value)
+                            messages.add(Message(sender = "Other", content = data, decryptedContent = decrypted, isFromMe = false))
+                        }
                     } catch (e: Exception) {
+                        Log.e("MainActivity", "Error handling message", e)
                         messages.add(Message(sender = "System", content = "Error decrypting message", isFromMe = false))
                     }
                 }
@@ -216,11 +239,27 @@ class MainActivity : ComponentActivity() {
                     "chat" -> ChatScreen(
                         messages = messages,
                         connectionStatus = connectionStatus,
-                        password = password,
-                        onSend = { text ->
-                            val encrypted = EncryptionUtils.encryptText(text, password)
-                            bluetoothService?.write(encrypted)
-                            messages.add(Message(sender = "You", content = encrypted, decryptedContent = text, isFromMe = true))
+                        onSend = { data, type ->
+                            val prefix = when(type) {
+                                MessageType.TEXT -> "T:"
+                                MessageType.AUDIO -> "A:"
+                                else -> "T:"
+                            }
+                            val encrypted = if (type == MessageType.TEXT) {
+                                EncryptionUtils.encryptText(data as String, password)
+                            } else {
+                                EncryptionUtils.encrypt(data as ByteArray, password)
+                            }
+                            bluetoothService?.write(prefix + encrypted)
+
+                            val msg = if (type == MessageType.TEXT) {
+                                Message(sender = "You", content = encrypted, decryptedContent = data as String, isFromMe = true)
+                            } else {
+                                // For audio, we don't have a local URI here easily without refactoring,
+                                // but we can handle it in the recording logic
+                                Message(sender = "You", content = encrypted, type = type, isFromMe = true)
+                            }
+                            messages.add(msg)
                         },
                         onBack = { 
                             bluetoothService?.stop()
@@ -409,20 +448,74 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun ChatScreen(
-        messages: List<Message>,
+        messages: MutableList<Message>,
         connectionStatus: BluetoothService.Status,
-        password: String,
-        onSend: (String) -> Unit,
+        onSend: (Any, MessageType) -> Unit,
         onBack: () -> Unit
     ) {
         var inputText by remember { mutableStateOf("") }
+        val context = LocalContext.current
+        var isRecording by remember { mutableStateOf(false) }
+        var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
+        var audioFile by remember { mutableStateOf<File?>(null) }
+
+        val startRecording = {
+            try {
+                val file = File(context.cacheDir, "sent_audio_${System.currentTimeMillis()}.mp4")
+                audioFile = file
+                val newRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    MediaRecorder(context)
+                } else {
+                    MediaRecorder()
+                }
+                newRecorder.apply {
+                    setAudioSource(MediaRecorder.AudioSource.MIC)
+                    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                    setOutputFile(file.absolutePath)
+                    prepare()
+                    start()
+                }
+                recorder = newRecorder
+                isRecording = true
+            } catch (e: Exception) {
+                Log.e("ChatScreen", "Failed to start recording", e)
+                Toast.makeText(context, "Failed to start recording", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        val stopRecording = {
+            try {
+                recorder?.apply {
+                    stop()
+                    release()
+                }
+                recorder = null
+                isRecording = false
+
+                audioFile?.let { file ->
+                    val bytes = file.readBytes()
+                    onSend(bytes, MessageType.AUDIO)
+                    // Update the last message (which was added in onSend) with the local URI
+                    if (messages.isNotEmpty()) {
+                        val lastMsg = messages.last()
+                        if (lastMsg.isFromMe && lastMsg.type == MessageType.AUDIO) {
+                            val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+                            messages[messages.size - 1] = lastMsg.copy(localUri = uri)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ChatScreen", "Failed to stop recording", e)
+            }
+        }
 
         Column(modifier = Modifier.fillMaxSize()) {
             // Header
             TopAppBar(
                 title = { 
                     Column {
-                        Text("ChemoChat", fontSize = 18.sp)
+                        Text(if (isRecording) "Recording Audio..." else "ChemoChat", fontSize = 18.sp)
                         Text(connectionStatus.name, fontSize = 12.sp, color = if (connectionStatus == BluetoothService.Status.CONNECTED) Color.Green else Color.Red)
                     }
                 },
@@ -431,7 +524,15 @@ class MainActivity : ComponentActivity() {
                 },
                 actions = {
                     IconButton(onClick = { /* Attach Image */ }) { Icon(Icons.Default.Image, contentDescription = null) }
-                    IconButton(onClick = { /* Record Audio */ }) { Icon(Icons.Default.Mic, contentDescription = null) }
+                    IconButton(onClick = {
+                        if (isRecording) stopRecording() else startRecording()
+                    }) {
+                        Icon(
+                            Icons.Default.Mic,
+                            contentDescription = null,
+                            tint = if (isRecording) Color.Red else LocalContentColor.current
+                        )
+                    }
                 }
             )
 
@@ -465,7 +566,7 @@ class MainActivity : ComponentActivity() {
                 FloatingActionButton(
                     onClick = {
                         if (inputText.isNotBlank()) {
-                            onSend(inputText)
+                            onSend(inputText, MessageType.TEXT)
                             inputText = ""
                         }
                     },
@@ -482,7 +583,15 @@ class MainActivity : ComponentActivity() {
     fun ChatBubble(message: Message) {
         val alignment = if (message.isFromMe) Alignment.End else Alignment.Start
         val bgColor = if (message.isFromMe) MaterialTheme.colorScheme.primary else Color(0xFF333333)
-        val textColor = if (message.isFromMe) Color.White else Color.White
+        val context = LocalContext.current
+        var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+        var isPlaying by remember { mutableStateOf(false) }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                mediaPlayer?.release()
+            }
+        }
 
         Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = alignment) {
             Surface(
@@ -494,11 +603,41 @@ class MainActivity : ComponentActivity() {
                     bottomEnd = if (message.isFromMe) 4.dp else 16.dp
                 )
             ) {
-                Text(
-                    text = message.decryptedContent ?: "Encrypted Message",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    color = textColor
-                )
+                if (message.type == MessageType.AUDIO) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = {
+                            if (isPlaying) {
+                                mediaPlayer?.stop()
+                                isPlaying = false
+                            } else {
+                                message.localUri?.let { uri ->
+                                    mediaPlayer?.release()
+                                    mediaPlayer = MediaPlayer.create(context, uri).apply {
+                                        setOnCompletionListener { isPlaying = false }
+                                        start()
+                                    }
+                                    isPlaying = true
+                                }
+                            }
+                        }) {
+                            Icon(
+                                if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                tint = Color.White
+                            )
+                        }
+                        Text("Voice Message", color = Color.White)
+                    }
+                } else {
+                    Text(
+                        text = message.decryptedContent ?: "Encrypted Message",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        color = Color.White
+                    )
+                }
             }
             Text(
                 text = message.sender,

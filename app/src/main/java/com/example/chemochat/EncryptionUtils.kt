@@ -43,14 +43,14 @@ object EncryptionUtils {
         val encrypted = cipher.doFinal(data)
 
         val combined = salt + iv + encrypted
-        return Base64.encodeToString(combined, Base64.DEFAULT)
+        return Base64.encodeToString(combined, Base64.NO_WRAP)
     }
 
     /**
      * Decrypts a Base64 encoded string using AES-256.
      */
     fun decrypt(encryptedBase64: String, password: String): ByteArray {
-        val combined = Base64.decode(encryptedBase64, Base64.DEFAULT)
+        val combined = Base64.decode(encryptedBase64, Base64.NO_WRAP)
         
         val salt = combined.sliceArray(0 until SALT_SIZE)
         val iv = combined.sliceArray(SALT_SIZE until SALT_SIZE + IV_SIZE)
