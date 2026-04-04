@@ -50,7 +50,19 @@ object EncryptionUtils {
      * Decrypts a Base64 encoded string using AES-256.
      */
     fun decrypt(encryptedBase64: String, password: String): ByteArray {
-        val combined = Base64.decode(encryptedBase64, Base64.DEFAULT)
+        if (encryptedBase64.isEmpty()) {
+            throw IllegalArgumentException("Encrypted data string is empty")
+        }
+
+        val combined = try {
+            Base64.decode(encryptedBase64, Base64.DEFAULT)
+        } catch (e: Exception) {
+            throw IllegalArgumentException("Invalid Base64 input", e)
+        }
+
+        if (combined.size < SALT_SIZE + IV_SIZE) {
+            throw IllegalArgumentException("Encrypted data is too short")
+        }
         
         val salt = combined.sliceArray(0 until SALT_SIZE)
         val iv = combined.sliceArray(SALT_SIZE until SALT_SIZE + IV_SIZE)
