@@ -36,7 +36,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
@@ -158,7 +157,7 @@ class MainActivity : ComponentActivity() {
             }
 
             val allGranted = requiredPermissions.all {
-                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
             }
 
             if (!allGranted) {
