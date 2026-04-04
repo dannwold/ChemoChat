@@ -41,6 +41,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
@@ -90,7 +92,37 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun ChemoChatApp(adapter: BluetoothAdapter?) {
         val context = LocalContext.current
-        val sharedPrefs = remember { context.getSharedPreferences("ChemoChatPrefs", Context.MODE_PRIVATE) }
+        val sharedPrefs = remember {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+
+            val encryptedPrefs = EncryptedSharedPreferences.create(
+                context,
+                "ChemoChatEncryptedPrefs",
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+
+            // Migration from plaintext SharedPreferences
+            val oldPrefs = context.getSharedPreferences("ChemoChatPrefs", Context.MODE_PRIVATE)
+            if (oldPrefs.all.isNotEmpty()) {
+                val editor = encryptedPrefs.edit()
+                oldPrefs.all.forEach { (key, value) ->
+                    when (value) {
+                        is String -> editor.putString(key, value)
+                        is Int -> editor.putInt(key, value)
+                        is Boolean -> editor.putBoolean(key, value)
+                        is Float -> editor.putFloat(key, value)
+                        is Long -> editor.putLong(key, value)
+                    }
+                }
+                editor.apply()
+                oldPrefs.edit().clear().apply()
+            }
+            encryptedPrefs
+        }
         
         var displayName by remember { mutableStateOf(sharedPrefs.getString("displayName", "User") ?: "User") }
         var chatColor by remember { mutableStateOf(sharedPrefs.getInt("chatColor", AndroidColor.parseColor("#10b981"))) }
