@@ -14,7 +14,7 @@ import java.util.UUID
 /**
  * Service to manage Bluetooth Classic connections (RFCOMM).
  */
-class BluetoothService(
+open class BluetoothService(
     private val adapter: BluetoothAdapter?,
     private val onConnectionStatusChanged: (Status) -> Unit,
     private val onMessageReceived: (String) -> Unit
@@ -34,8 +34,12 @@ class BluetoothService(
     @SuppressLint("MissingPermission")
     fun startHost() {
         stop()
-        acceptThread = AcceptThread().apply { start() }
+        startAcceptThread()
         onConnectionStatusChanged(Status.CONNECTING)
+    }
+
+    internal open fun startAcceptThread() {
+        acceptThread = AcceptThread().apply { start() }
     }
 
     @SuppressLint("MissingPermission")
@@ -59,7 +63,7 @@ class BluetoothService(
         onConnectionStatusChanged(Status.DISCONNECTED)
     }
 
-    private inner class AcceptThread : Thread() {
+    internal inner class AcceptThread : Thread() {
         private val mmServerSocket: BluetoothServerSocket? by lazy(LazyThreadSafetyMode.NONE) {
             adapter?.listenUsingInsecureRfcommWithServiceRecord(NAME, MY_UUID)
         }
