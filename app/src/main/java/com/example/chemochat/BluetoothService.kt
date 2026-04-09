@@ -61,7 +61,7 @@ class BluetoothService(
 
     private inner class AcceptThread : Thread() {
         private val mmServerSocket: BluetoothServerSocket? by lazy(LazyThreadSafetyMode.NONE) {
-            adapter?.listenUsingInsecureRfcommWithServiceRecord(NAME, MY_UUID)
+            adapter?.listenUsingRfcommWithServiceRecord(NAME, MY_UUID)
         }
 
         override fun run() {
@@ -93,7 +93,7 @@ class BluetoothService(
 
     private inner class ConnectThread(device: BluetoothDevice) : Thread() {
         private val mmSocket: BluetoothSocket? by lazy(LazyThreadSafetyMode.NONE) {
-            device.createInsecureRfcommSocketToServiceRecord(MY_UUID)
+            device.createRfcommSocketToServiceRecord(MY_UUID)
         }
 
         @SuppressLint("MissingPermission")
